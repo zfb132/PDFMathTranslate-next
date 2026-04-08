@@ -115,23 +115,6 @@ def _translate_wrapper(
     pipe_cancel_message_recv: multiprocessing.connection.Connection,
     logger_queue: multiprocessing.Queue,
 ):
-    # Workaround: On Windows, loky (sklearn/joblib dependency) queries
-    # physical CPU cores by spawning powershell.exe without CREATE_NO_WINDOW.
-    # When this subprocess runs under pythonw.exe (PyStand builds), there is
-    # no parent console to inherit, so Windows creates a visible console
-    # window. Multiple ThreadPoolExecutor threads can trigger this simultaneously
-    # due to a cache race condition, producing many popup windows.
-    # Pre-filling loky's cache here prevents the subprocess call entirely.
-    import sys
-    if sys.platform == "win32":
-        try:
-            import joblib.externals.loky.backend.context as _loky_ctx
-            if _loky_ctx.physical_cores_cache is None:
-                import os
-                _loky_ctx.physical_cores_cache = os.cpu_count()
-        except Exception:
-            pass
-
     logger = logging.getLogger(__name__)
     cancel_event = threading.Event()
     try:
@@ -144,6 +127,31 @@ def _translate_wrapper(
 
         queue_handler = QueueHandler(logger_queue)
         logging.basicConfig(level=logging.INFO, handlers=[queue_handler])
+
+        # Workaround for loky spawning powershell.exe on Windows.
+        # loky queries physical CPU cores via powershell.exe without
+        # CREATE_NO_WINDOW. Under pythonw.exe (PyStand), there is no
+        # parent console, so Windows creates visible console windows.
+        # Multiple ThreadPoolExecutor threads hit this simultaneously
+        # (cache race), producing many popups. Pre-filling the cache
+        # prevents the subprocess call entirely.
+        import sys
+        if sys.platform == "win32":
+            try:
+                import joblib.externals.loky.backend.context as _loky_ctx
+                if _loky_ctx.physical_cores_cache is None:
+                    import os
+                    _loky_ctx.physical_cores_cache = os.cpu_count()
+                    logger.info(
+                        "Pre-filled loky physical_cores_cache=%d to prevent "
+                        "PowerShell window popups under pythonw.exe",
+                        os.cpu_count(),
+                    )
+            except Exception:
+                logger.debug(
+                    "Failed to pre-fill loky physical_cores_cache",
+                    exc_info=True,
+                )
 
         config = create_babeldoc_config(settings, file)
 
